@@ -1,5 +1,7 @@
 'use strict';
-const STORAGE_KEY = 'shopping-list.v1';
+const LEGACY_KEY = 'shopping-list.v1';
+const CACHE_KEY = 'shopping-list.shared-cache.v1';
+const IMPORT_KEY = 'shopping-list.shared-imported.v1';
 const { categories, products } = window.SHOPPING_CATALOG;
 const byId = new Map(categories.map(category => [category.id, category]));
 const normalize = value => value.normalize('NFKD').replace(/[\u0591-\u05C7]/g, '').replace(/[׳״'"’`]/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('he');
@@ -8,32 +10,34 @@ const searchInput = document.querySelector('#product-search');
 const warning = document.querySelector('#storage-warning');
 const status = document.querySelector('#status');
 let items = [];
-let storageReadable = true;
 let activeCategory = null;
 let suggestions = [];
 let activeOption = -1;
 let removedItem = null;
+let legacyItems = [];
+let hasSnapshot = false;
+let sharedReady = false;
+let writing = false;
+let reading = false;
+let epoch = 0;
 
 function showWarning(message) { warning.textContent = message; warning.hidden = false; }
-function parseItems(raw) {
-  if (raw === null) return [];
-  const saved = JSON.parse(raw);
-  if (!Array.isArray(saved) || !saved.every(item => item && typeof item.id === 'string' && typeof item.name === 'string' && item.name.trim() && typeof item.done === 'boolean') || new Set(saved.map(item => item.id)).size !== saved.length) throw new Error('Invalid saved list');
-  // Older versions kept purchased items. Only pending items belong in the new shopping view.
-  return saved.filter(item => !item.done).map(item => ({
-    ...item,
-    category: byId.has(item.category) ? item.category : (productByName.get(normalize(item.name))?.category || 'other')
-  }));
+function parseItems(saved) {
+  if (!Array.isArray(saved) || !saved.every(item => item && typeof item.id === 'string' && typeof item.name === 'string' && item.name.trim() && typeof item.done === 'boolean') || new Set(saved.map(item => item.id)).size !== saved.length) throw new Error('Invalid list');
+  return saved.filter(item => !item.done).map(item => ({ ...item, category: byId.has(item.category) ? item.category : (productByName.get(normalize(item.name))?.category || 'other') }));
 }
-try { items = parseItems(localStorage.getItem(STORAGE_KEY)); }
-catch {
-  storageReadable = false;
-  showWarning('לא ניתן לקרוא את הרשימה השמורה. אפשר להשתמש ברשימה זמנית; הנתונים הקודמים לא יידרסו.');
-}
-function save() {
-  if (!storageReadable) return;
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); warning.hidden = true; }
-  catch { showWarning('השמירה במכשיר אינה זמינה כרגע. השינויים נשמרים רק עד לסגירת העמוד.'); }
+try {
+  const cached = localStorage.getItem(CACHE_KEY);
+  if (cached !== null) { items = parseItems(JSON.parse(cached)); hasSnapshot = true; }
+} catch { /* A damaged local cache never replaces shared data. */ }
+try {
+  if (!localStorage.getItem(IMPORT_KEY)) {
+    const old = localStorage.getItem(LEGACY_KEY);
+    if (old !== null) legacyItems = parseItems(JSON.parse(old));
+  }
+} catch { showWarning('לא ניתן לקרוא את הרשימה המקומית הקודמת. הרשימה המשותפת אינה מושפעת.'); }
+function cacheSnapshot() {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(items)); } catch { /* Shared writes still persist on the server. */ }
 }
 function announce(message) { status.textContent = message; }
 function toast(message, undo = false) {
@@ -42,16 +46,89 @@ function toast(message, undo = false) {
   document.querySelector('#toast').hidden = false;
 }
 function inList(name) { return items.some(item => normalize(item.name) === normalize(name)); }
-function addItem(value, categoryId) {
+function updateConnection() {
+  const editable = sharedReady && navigator.onLine && !writing;
+  document.querySelector('#sync-label').textContent = !navigator.onLine ? 'אין חיבור — מוצג העדכון האחרון' : writing ? 'שומרים ברשימה המשותפת…' : sharedReady ? 'רשימה אחת לכולם · מתעדכנת אוטומטית' : 'אין חיבור לרשימה המשותפת';
+  document.querySelector('#sync-state').classList.toggle('disconnected', !sharedReady || !navigator.onLine);
+  document.querySelectorAll('.product-button, .item input, .delete-button, #custom-form button, #custom-search-add, #undo-button, .suggestion').forEach(control => { control.disabled = !editable; });
+  document.querySelector('#import-local').disabled = !editable;
+  document.querySelector('#import-panel').hidden = legacyItems.length === 0;
+  document.querySelector('#import-count').textContent = legacyItems.length;
+  document.querySelector('#list-unavailable').hidden = hasSnapshot;
+  document.querySelector('#empty-state').hidden = !hasSnapshot || items.length > 0;
+}
+async function request(method = 'GET', body) {
+  let response;
+  try { response = await fetch('./api/list', {
+    method, cache: 'no-store', headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(12000)
+  }); } catch { throw new Error('לא ניתן להתחבר לרשימה המשותפת כרגע. בדקו את החיבור ונסו לרענן.'); }
+  let data;
+  try { data = await response.json(); } catch { throw new Error('הרשימה המשותפת אינה זמינה כרגע. נסו לרענן.'); }
+  if (!response.ok) throw new Error(data.error || 'לא ניתן לעדכן את הרשימה המשותפת כרגע.');
+  return data;
+}
+function refreshDisplay() { renderItems(); updateProductStates(); updateConnection(); }
+async function refreshShared() {
+  if (reading || writing || !navigator.onLine) { updateConnection(); return; }
+  reading = true;
+  const startEpoch = epoch;
+  try {
+    const data = await request();
+    let nextItems;
+    try { nextItems = parseItems(data.items); } catch { throw new Error('לא ניתן לקרוא את הרשימה המשותפת כרגע. נסו לרענן.'); }
+    if (startEpoch !== epoch) return;
+    const changed = JSON.stringify(nextItems) !== JSON.stringify(items);
+    items = nextItems; hasSnapshot = true; sharedReady = true; warning.hidden = true; cacheSnapshot();
+    if (changed) {
+      const focusedRow = document.activeElement?.closest('.item');
+      const focusedId = focusedRow?.dataset.id;
+      const focusedDelete = document.activeElement?.classList.contains('delete-button');
+      refreshDisplay();
+      if (focusedId) {
+        const row = [...document.querySelectorAll('.item')].find(row => row.dataset.id === focusedId);
+        (row?.querySelector(focusedDelete ? 'button' : 'input') || document.querySelector('#list-heading')).focus({ preventScroll: true });
+      }
+      announce('הרשימה המשותפת עודכנה');
+    } else updateConnection();
+  } catch (error) {
+    if (startEpoch !== epoch) return;
+    sharedReady = false;
+    showWarning(navigator.onLine ? error.message : 'אין חיבור לאינטרנט. אפשר לעיין בעותק האחרון; לשינויים יש להתחבר מחדש.');
+    updateConnection();
+  } finally { reading = false; }
+}
+async function mutate(operation) {
+  if (writing) return false;
+  if (!sharedReady || !navigator.onLine) { toast('כדי לעדכן את הרשימה של כולם צריך חיבור. לחצו על רענון ונסו שוב.'); return false; }
+  writing = true; epoch++; updateConnection();
+  try {
+    await operation();
+    hasSnapshot = true; cacheSnapshot(); warning.hidden = true;
+    return true;
+  } catch (error) {
+    showWarning(`${error.message} לא ניתן לאשר שהפעולה הושלמה; רעננו לפני ניסיון נוסף.`);
+    return false;
+  } finally {
+    writing = false; epoch++; refreshDisplay();
+    // Merge only the affected item locally; fetch the server snapshot to include other users' changes.
+    void refreshShared();
+  }
+}
+async function addItem(value, categoryId) {
   const name = value.trim().slice(0, 160);
   if (!name) return false;
-  removedItem = null;
-  if (inList(name)) { toast(`${name} כבר ברשימה`); return false; }
-  const knownProduct = productByName.get(normalize(name));
-  items.push({ id: crypto.randomUUID(), name: knownProduct?.name || name, done: false, category: knownProduct?.category || categoryId || 'other' });
-  save(); renderItems(); updateProductStates();
-  toast(`${knownProduct?.name || name} נוסף לרשימה`);
-  return true;
+  const known = productByName.get(normalize(name));
+  const input = { name: known?.name || name, category: known?.category || categoryId || 'other' };
+  return mutate(async () => {
+    const data = await request('POST', input);
+    const [item] = parseItems([data.item]);
+    removedItem = null;
+    if (!items.some(existing => existing.id === item.id)) {
+      items = items.filter(existing => normalize(existing.name) !== normalize(item.name)); items.push(item);
+    }
+    toast(data.created ? `${item.name} נוסף לרשימה של כולם` : `${item.name} כבר ברשימה המשותפת`);
+  });
 }
 function renderCategories() {
   const grid = document.querySelector('#category-grid');
@@ -77,6 +154,7 @@ function updateProductStates() {
     button.setAttribute('aria-label', `${button.dataset.product} — ${chosen ? 'כבר ברשימה' : 'הוספה לרשימה'}`);
   });
   if (!document.querySelector('#suggestions-panel').hidden) renderSearch(false);
+  updateConnection();
 }
 function renderCategory(category) {
   activeCategory = category;
@@ -117,11 +195,13 @@ function setActiveOption(index) {
     document.querySelector(`#suggestion-${index}`)?.scrollIntoView({ block: 'nearest' });
   } else searchInput.removeAttribute('aria-activedescendant');
 }
-function chooseSuggestion(product) {
-  addItem(product.name, activeCategory.id);
-  searchInput.value = '';
-  document.querySelector('#clear-search').hidden = true;
-  closeSearch(); searchInput.focus();
+async function chooseSuggestion(product) {
+  const query = searchInput.value;
+  const success = await addItem(product.name, activeCategory.id);
+  if (success && searchInput.value === query) {
+    searchInput.value = ''; document.querySelector('#clear-search').hidden = true; closeSearch();
+  }
+  if (!document.querySelector('#category-view').hidden) searchInput.focus();
 }
 function renderSearch(resetActive = true) {
   if (!activeCategory) return;
@@ -148,6 +228,7 @@ function renderSearch(resetActive = true) {
   document.querySelector('#custom-search-add').textContent = `אחר — הוספת ״${searchInput.value.trim()}״ לרשימה`;
   searchInput.setAttribute('aria-expanded', 'true');
   setActiveOption(resetActive ? -1 : Math.min(activeOption, suggestions.length - 1));
+  updateConnection();
   if (resetActive) announce(matching.length ? `${matching.length} מוצרים מתאימים בקטגוריה` : 'אין מוצרים מתאימים. אפשר להוסיף מוצר אחר בטקסט חופשי.');
 }
 searchInput.addEventListener('input', () => renderSearch());
@@ -170,29 +251,40 @@ document.querySelector('#search-form').addEventListener('submit', event => {
   if (suggestions.length) chooseSuggestion(suggestions[activeOption < 0 ? 0 : activeOption]);
   else addCustomSearch();
 });
-function addCustomSearch() {
-  if (!searchInput.value.trim()) return;
-  addItem(searchInput.value, activeCategory.id);
-  searchInput.value = ''; closeSearch(); document.querySelector('#clear-search').hidden = true; searchInput.focus();
+async function addCustomSearch() {
+  const query = searchInput.value;
+  if (!query.trim()) return;
+  const success = await addItem(query, activeCategory.id);
+  if (success && searchInput.value === query) {
+    searchInput.value = ''; closeSearch(); document.querySelector('#clear-search').hidden = true;
+  }
+  if (!document.querySelector('#category-view').hidden) searchInput.focus();
 }
 document.querySelector('#custom-search-add').addEventListener('click', addCustomSearch);
 document.querySelector('#clear-search').addEventListener('click', () => { searchInput.value = ''; renderSearch(); searchInput.focus(); });
-document.querySelector('#custom-form').addEventListener('submit', event => {
+document.querySelector('#custom-form').addEventListener('submit', async event => {
   event.preventDefault();
   const input = document.querySelector('#custom-input');
   if (!input.value.trim()) { input.focus(); return; }
-  addItem(input.value, activeCategory.id); input.value = ''; input.focus();
+  const value = input.value;
+  const success = await addItem(value, activeCategory.id);
+  if (success && input.value === value) input.value = '';
+  if (!document.querySelector('#category-view').hidden) input.focus();
 });
-function removeItem(id, purchased) {
-  const index = items.findIndex(item => item.id === id);
-  if (index < 0) return;
+async function removeItem(id, purchased) {
+  const item = items.find(item => item.id === id);
+  if (!item) return;
   const position = [...document.querySelectorAll('.item')].findIndex(row => row.dataset.id === id);
-  const [item] = items.splice(index, 1);
-  removedItem = { item, index };
-  save(); renderItems(); updateProductStates();
-  toast(purchased ? `${item.name} נקנה והוסר מהרשימה` : `${item.name} הוסר מהרשימה`, true);
-  const rows = document.querySelectorAll('.item');
-  (rows[Math.min(position, rows.length - 1)]?.querySelector('input') || document.querySelector('#list-heading')).focus();
+  const success = await mutate(async () => {
+    const result = await request('DELETE', item);
+    items = items.filter(existing => existing.id !== id);
+    removedItem = result.removed ? { item } : null;
+    toast(result.removed ? (purchased ? `${item.name} נקנה והוסר מהרשימה של כולם` : `${item.name} הוסר מהרשימה של כולם`) : `${item.name} כבר הוסר על ידי משתתף אחר`, result.removed);
+  });
+  if (success && !document.querySelector('#list-view').hidden) {
+    const rows = document.querySelectorAll('.item');
+    (rows[Math.min(position, rows.length - 1)]?.querySelector('input') || document.querySelector('#list-heading')).focus({ preventScroll: true });
+  }
 }
 function renderItems() {
   document.querySelector('#nav-count').textContent = items.length;
@@ -224,14 +316,19 @@ function renderItems() {
     group.append(title, list); groups.append(group);
   }
 }
-document.querySelector('#undo-button').addEventListener('click', () => {
+document.querySelector('#undo-button').addEventListener('click', async () => {
   if (!removedItem) return;
-  const { item, index } = removedItem; removedItem = null;
-  if (!inList(item.name)) items.splice(Math.min(index, items.length), 0, item);
-  save(); renderItems(); updateProductStates(); toast(`${item.name} הוחזר לרשימה`);
-  if (!document.querySelector('#list-view').hidden) {
-    const row = [...document.querySelectorAll('.item')].find(row => row.dataset.id === item.id);
-    row?.querySelector('input').focus();
+  const { item } = removedItem;
+  const success = await mutate(async () => {
+    const data = await request('POST', item);
+    const [restored] = parseItems([data.item]);
+    items = items.filter(existing => normalize(existing.name) !== normalize(restored.name));
+    items.push(restored); removedItem = null;
+    toast(`${restored.name} הוחזר לרשימה של כולם`);
+  });
+  if (success && !document.querySelector('#list-view').hidden) {
+    const row = [...document.querySelectorAll('.item')].find(row => normalize(row.querySelector('.item-name').textContent) === normalize(item.name));
+    row?.querySelector('input').focus({ preventScroll: true });
   }
 });
 document.querySelector('#dismiss-toast').addEventListener('click', () => {
@@ -248,19 +345,32 @@ function route(focusHeading = true) {
   document.querySelector('#list-tab').toggleAttribute('aria-current', view === 'list');
   document.querySelectorAll('.bottom-nav [aria-current]').forEach(tab => tab.setAttribute('aria-current', 'page'));
   if (category) renderCategory(category); else { activeCategory = null; closeSearch(); }
-  document.title = `${category ? category.name : view === 'list' ? 'הרשימה שלי' : 'בוחרים מוצרים'} — קניות`;
+  document.title = `${category ? category.name : view === 'list' ? 'הרשימה המשותפת' : 'בוחרים מוצרים'} — קניות`;
   if (focusHeading) { document.querySelector(`#${view}-heading`).focus(); window.scrollTo(0, 0); }
 }
 window.addEventListener('hashchange', () => route());
-window.addEventListener('storage', event => {
-  if (event.key !== STORAGE_KEY && event.key !== null) return;
-  try {
-    items = parseItems(event.newValue); storageReadable = true; removedItem = null;
-    renderItems(); updateProductStates(); document.querySelector('#toast').hidden = true;
-    announce('הרשימה עודכנה מחלון אחר');
-  } catch { showWarning('לא ניתן לקרוא את הרשימה שעודכנה בחלון אחר. רעננו את הדף לפני שינויים נוספים.'); storageReadable = false; }
+document.querySelector('#refresh-list').addEventListener('click', () => void refreshShared());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshShared(); });
+window.addEventListener('online', () => void refreshShared());
+window.addEventListener('offline', () => { sharedReady = false; updateConnection(); });
+window.addEventListener('focus', () => void refreshShared());
+setInterval(() => { if (!document.hidden) void refreshShared(); }, 15000);
+document.querySelector('#import-local').addEventListener('click', async () => {
+  const success = await mutate(async () => {
+    while (legacyItems.length) {
+      const old = legacyItems[0];
+      const data = await request('POST', { name: old.name.slice(0, 160), category: old.category });
+      const [item] = parseItems([data.item]);
+      items = items.filter(existing => normalize(existing.name) !== normalize(item.name)); items.push(item);
+      legacyItems.shift();
+    }
+    try { localStorage.setItem(IMPORT_KEY, 'true'); } catch { /* Old data is kept untouched. */ }
+    removedItem = null; toast('המוצרים מהרשימה הקודמת נוספו לרשימה של כולם');
+  });
+  if (!success) updateConnection();
 });
-renderCategories(); renderItems(); route(false);
+renderCategories(); renderItems(); route(false); updateConnection();
+void refreshShared();
 let installPrompt;
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault(); installPrompt = event; document.querySelector('#install-panel').hidden = false;
@@ -272,6 +382,6 @@ document.querySelector('#install-button').addEventListener('click', async () => 
 window.addEventListener('appinstalled', () => { document.querySelector('#install-panel').hidden = true; });
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {
-    showWarning('מצב ללא אינטרנט אינו זמין כרגע. הרשימה עדיין נשמרת במכשיר.');
+    showWarning('מצב ללא אינטרנט אינו זמין כרגע. הרשימה המשותפת נשמרת בשרת.');
   }));
 }
