@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f5f4ee">
-  <meta name="description" content="בוחרים מוצרים לפי קטגוריות, יוצרים רשימת קניות ומסמנים מה כבר בסל. גם בלי אינטרנט.">
+  <meta name="description" content="בוחרים מוצרים לפי קטגוריות, יוצרים רשימת קניות ומעדכנים רשימה משותפת לכולם.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="קניות">
   <link rel="manifest" href="./manifest.webmanifest">
@@ -19,6 +19,8 @@
   <div class="page">
     <header class="brand"><a href="#home" aria-label="קניות — דף הבית"><span class="brand-mark" aria-hidden="true">✓</span><span>קניות<span class="brand-dot">.</span></span></a><span class="brand-note">פחות לזכור. יותר להספיק.</span></header>
     <main>
+      <div id="sync-state" class="sync-state" role="status"><span id="sync-label">מתחברים לרשימה המשותפת…</span><button id="refresh-list" type="button">רענון</button></div>
+      <div id="import-panel" class="import-panel" hidden><p>מצאנו <span id="import-count"></span> מוצרים ברשימה המקומית הקודמת. להוסיף אותם לרשימה המשותפת?</p><button id="import-local" class="primary-button" type="button">הוספה לרשימה של כולם</button></div>
       <section id="home-view" aria-labelledby="home-heading">
         <div class="eyebrow"><span aria-hidden="true"></span> בונים את הקנייה הבאה</div>
         <div class="heading-row"><h1 id="home-heading" tabindex="-1">מה חסר בבית?</h1><span class="hero-symbol" aria-hidden="true">✳</span></div>
@@ -46,22 +48,23 @@
       </section>
       <section id="list-view" hidden aria-labelledby="list-heading">
         <div class="eyebrow"><span aria-hidden="true"></span> בוחרים. אוספים. מסמנים.</div>
-        <div class="heading-row"><h1 id="list-heading" tabindex="-1">הרשימה שלי</h1><span class="category-hero" aria-hidden="true">🛒</span></div>
-        <p class="intro">כבר בסל? סמנו את המוצר והוא יוסר מהרשימה.</p>
+        <div class="heading-row"><h1 id="list-heading" tabindex="-1">הרשימה המשותפת</h1><span class="category-hero" aria-hidden="true">🛒</span></div>
+        <p class="intro">כבר בסל? סמנו את המוצר והוא יוסר מהרשימה של כולם.</p>
         <div class="section-heading"><h2>מה עוד צריך לאסוף?</h2><span id="list-count"></span></div>
         <div id="empty-state" class="empty-state"><span class="empty-symbol" aria-hidden="true">✳</span><h3>הרשימה פנויה לקנייה הבאה</h3><p>כל מה שחסר מתחיל בבחירה קטנה.</p><a class="primary-button" href="#home">לבחירת מוצרים <span aria-hidden="true">←</span></a></div>
+        <p id="list-unavailable" class="list-unavailable">הרשימה המשותפת עדיין לא נטענה. בדקו את החיבור ולחצו על רענון.</p>
         <div id="shopping-groups"></div>
         <a class="more-products" href="#home">+ הוספת מוצרים נוספים</a>
       </section>
       <p id="storage-warning" role="alert" hidden></p>
       <div id="install-panel" hidden><span>הרשימה תמיד בהישג יד</span><button id="install-button" type="button">הוספה למסך הבית</button></div>
-      <p class="save-note"><span aria-hidden="true">●</span> הרשימה נשמרת אוטומטית במכשיר הזה</p>
+      <p class="save-note"><span aria-hidden="true">●</span> רשימה משותפת לכל מי שפותח את האתר</p>
       <p class="install-tip">להוספה למסך הבית, פתחו את תפריט הדפדפן<br>ב־iPhone: שיתוף ← הוספה למסך הבית</p>
     </main>
     <footer class="page-footer"><span>קצת סדר. הרבה שקט.</span><span aria-hidden="true">✳</span><span>הרשימה הקטנה שעושה הבדל</span></footer>
   </div>
   <div id="toast" class="toast" hidden><span id="toast-message" role="status" aria-live="polite"></span><button id="undo-button" type="button" hidden>ביטול</button><button id="dismiss-toast" type="button" aria-label="סגירת ההודעה">×</button></div>
   <p id="status" class="sr-only" role="status" aria-live="polite"></p>
-  <nav class="bottom-nav" aria-label="ניווט ראשי"><a id="catalog-tab" href="#home"><span class="nav-icon" aria-hidden="true">▦</span>בחירת מוצרים</a><a id="list-tab" href="#list"><span class="nav-icon" aria-hidden="true">☷</span>הרשימה שלי <span id="nav-count">0</span></a></nav>
+  <nav class="bottom-nav" aria-label="ניווט ראשי"><a id="catalog-tab" href="#home"><span class="nav-icon" aria-hidden="true">▦</span>בחירת מוצרים</a><a id="list-tab" href="#list"><span class="nav-icon" aria-hidden="true">☷</span>הרשימה המשותפת <span id="nav-count">0</span></a></nav>
 </body>
 </html>
