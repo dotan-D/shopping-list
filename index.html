@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="./style.css">
   <title>קניות — הרשימה שלך</title>
   <script src="./catalog.js" defer></script>
+  <script src="./quick-entry.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -25,7 +26,19 @@
         <div class="eyebrow"><span aria-hidden="true"></span> בונים את הקנייה הבאה</div>
         <div class="heading-row"><h1 id="home-heading" tabindex="-1">מה חסר בבית?</h1><span class="hero-symbol" aria-hidden="true">✳</span></div>
         <p class="intro">בוחרים קטגוריה, מוסיפים מוצרים ויוצאים לקניות.</p>
-        <div class="section-heading"><h2>מאיפה מתחילים?</h2><span id="catalog-count"></span></div>
+        <section class="quick-entry" aria-labelledby="quick-heading">
+          <div class="quick-heading-row"><h2 id="quick-heading">פשוט להגיד מה חסר</h2><button id="voice-button" type="button" aria-pressed="false" hidden><span aria-hidden="true">◉</span> הכתבה קולית</button></div>
+          <p>כותבים או מכתיבים כמה מוצרים יחד, בלי לחפש קטגוריה.</p>
+          <form id="quick-form">
+            <label class="sr-only" for="quick-input">אילו מוצרים להוסיף?</label>
+            <textarea id="quick-input" rows="2" maxlength="1200" placeholder="למשל: תוסיף חלב, לחם וביצים" aria-describedby="quick-help"></textarea>
+            <p id="voice-status" class="voice-status" role="status" aria-live="polite"></p>
+            <p id="quick-help">מזהים שמות מוצרים, ללא כמויות. בדקו לפני ההוספה. מוצר חדש יישמר ב״אחר״. עד 20 מוצרים בכל פעם.</p>
+            <div id="quick-preview" hidden><div class="quick-preview-heading">זיהינו להוספה — אפשר להסיר מוצר בלחיצה על ×</div><div id="quick-products"></div><p id="quick-limit" role="alert" hidden>אפשר להוסיף עד 20 מוצרים בכל פעם. הסירו חלק מהמוצרים כדי להמשיך.</p></div>
+            <button id="quick-add" class="primary-button" type="submit" disabled>הוספה לרשימה של כולם <span aria-hidden="true">←</span></button>
+          </form>
+        </section>
+        <div class="section-heading"><h2>או בוחרים קטגוריה</h2><span id="catalog-count"></span></div>
         <div id="category-grid" class="category-grid"></div>
         <div class="home-note"><span aria-hidden="true">✓</span><p>סיימתם לבחור? עברו ל<strong>רשימה שלי</strong>.<br>בזמן הקנייה, סמנו מוצר כדי להסיר אותו מהרשימה.</p></div>
       </section>
@@ -33,6 +46,8 @@
         <a class="back-link" href="#home"><span aria-hidden="true">→</span> כל הקטגוריות</a>
         <div class="heading-row category-heading-row"><div><div class="eyebrow">בוחרים ומוסיפים לרשימה</div><h1 id="category-heading" tabindex="-1"></h1></div><span id="category-icon" class="category-hero" aria-hidden="true"></span></div>
         <p class="intro" id="category-description"></p>
+        <div class="catalog-tools"><span>האפשרויות משותפות לכולם</span><button id="manage-catalog" type="button" aria-pressed="false">עריכת מוצרים</button></div>
+        <p id="catalog-edit-note" class="catalog-edit-note" hidden>לחצו על מוצר כדי להסיר אותו מהאפשרויות אצל כולם. פריטים שכבר ברשימת הקניות נשארים בה.</p>
         <form id="search-form" autocomplete="off">
           <label for="product-search">איזה מוצר להוסיף?</label>
           <div class="search-wrap"><span aria-hidden="true" class="search-icon">⌕</span><input id="product-search" type="search" placeholder="מתחילים להקליד, אנחנו נשלים…" maxlength="160" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-results" enterkeyhint="search"><button id="clear-search" type="button" aria-label="ניקוי החיפוש" hidden>×</button></div>
@@ -44,7 +59,8 @@
         </form>
         <p class="search-help">ההשלמות הן מתוך הקטגוריה הזאת. בחרו מוצר כדי להוסיף לרשימה.</p>
         <div id="browse-products"><div class="section-heading"><h2>המוצרים בקטגוריה</h2><span id="category-product-count"></span></div><div id="product-grid" class="product-grid"></div></div>
-        <details id="custom-details" class="custom-details"><summary>אחר — הוספת מוצר בטקסט חופשי <span aria-hidden="true">+</span></summary><form id="custom-form"><label for="custom-input">שם המוצר</label><div class="custom-input-row"><input id="custom-input" placeholder="מה עוד צריך?" maxlength="160" required><button class="primary-button" type="submit">הוספה</button></div></form></details>
+        <details id="hidden-products" class="custom-details" hidden><summary>מוצרים שהוסרו (<span id="hidden-product-count">0</span>) — אפשר לשחזר</summary><div id="hidden-product-list"></div></details>
+        <details id="custom-details" class="custom-details"><summary>אחר — הוספת מוצר בטקסט חופשי <span aria-hidden="true">+</span></summary><form id="custom-form"><p class="custom-save-note">מוצר חדש יישמר בקטגוריה גם לבחירה בקניות הבאות, אצל כולם.</p><label for="custom-input">שם המוצר</label><div class="custom-input-row"><input id="custom-input" placeholder="מה עוד צריך?" maxlength="160" required><button class="primary-button" type="submit">הוספה</button></div></form></details>
       </section>
       <section id="list-view" hidden aria-labelledby="list-heading">
         <div class="eyebrow"><span aria-hidden="true"></span> בוחרים. אוספים. מסמנים.</div>
