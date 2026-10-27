@@ -5,7 +5,7 @@ const path = require('node:path');
 const api = require('./api/list.js');
 const root = __dirname;
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
-const assets = new Set(['index.html', 'app.js', 'catalog.js', 'style.css', 'manifest.webmanifest', 'sw.js']);
+const assets = new Set(['index.html', 'app.js', 'quick-entry.js', 'catalog.js', 'style.css', 'manifest.webmanifest', 'sw.js']);
 http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   if (pathname === '/api/list') {

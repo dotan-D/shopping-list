@@ -16,7 +16,7 @@ function installRedisAdapter() {
     const lines = result.stdout.replace(/\n$/, '').split('\n');
     if (/^(ERR|WRONGTYPE|OOM)/.test(result.stdout)) throw new Error('Test Redis command failed');
     if (parts[0] === 'HGETALL') return result.stdout === '\n' ? [] : lines;
-    if (parts[0] === 'EVAL' && lines.length === 2) return [Number(lines[0]), lines[1]];
+    if (parts[0] === 'EVAL' && lines.length > 1) return [Number(lines[0]), ...lines.slice(1)];
     return Number(lines[0]);
   };
   global.fetch = async (url, options) => {

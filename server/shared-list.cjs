@@ -1,12 +1,26 @@
 'use strict';
 const { createHash, randomUUID } = require('node:crypto');
 const KEY = 'shopping-list:shared:v1';
+const CATALOG_KEY = 'shopping-list:catalog:v1';
 const CATEGORIES = new Set(['produce', 'dairy', 'bakery', 'meat', 'canned', 'pantry', 'baking', 'snacks', 'drinks', 'frozen', 'cleaning', 'care', 'home', 'other']);
 const ADD = `local current = redis.call('HGET', KEYS[1], ARGV[1])
-if current then return {0, current} end
-if redis.call('HLEN', KEYS[1]) >= 500 then return {-1, ''} end
+if not current and redis.call('HLEN', KEYS[1]) >= 500 then return {-1, '', ''} end
+if ARGV[3] ~= '' and redis.call('HEXISTS', KEYS[2], ARGV[1]) == 0 and redis.call('HLEN', KEYS[2]) >= 2000 then return {-2, '', ''} end
+local catalog = ''
+if ARGV[3] ~= '' then
+  local saved = redis.call('HGET', KEYS[2], ARGV[1])
+  if saved and not cjson.decode(saved).hidden then catalog = saved
+  else
+    redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
+    catalog = ARGV[3]
+  end
+end
+if current then return {0, current, catalog} end
 redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
-return {1, ARGV[2]}`;
+return {1, ARGV[2], catalog}`;
+const SAVE_PRODUCT = `if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 and redis.call('HLEN', KEYS[1]) >= 2000 then return 0 end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+return 1`;
 const REMOVE = `local current = redis.call('HGET', KEYS[1], ARGV[1])
 if not current then return 0 end
 if cjson.decode(current).id ~= ARGV[2] then return 0 end
@@ -57,14 +71,17 @@ async function readList() {
 }
 async function addItem(input) {
   const value = validateItem(input);
+  if (input.remember !== undefined && typeof input.remember !== 'boolean') throw failure(400, 'פרטי המוצר אינם תקינים.');
   const item = { ...value, id: randomUUID(), done: false, createdAt: Date.now() };
-  const result = await command(['EVAL', ADD, '1', KEY, fieldFor(value.name), JSON.stringify(item)]);
-  if (!Array.isArray(result) || result.length !== 2) throw failure(502, 'לא ניתן לשמור את המוצר כרגע.');
+  const catalog = input.remember ? { ...value, hidden: false } : null;
+  const result = await command(['EVAL', ADD, '2', KEY, CATALOG_KEY, fieldFor(value.name), JSON.stringify(item), catalog ? JSON.stringify(catalog) : '']);
+  if (!Array.isArray(result) || result.length !== 3) throw failure(502, 'לא ניתן לשמור את המוצר כרגע.');
+  if (result[0] === -2) throw failure(409, 'קטלוג המוצרים מלא. לא ניתן לשמור מוצר נוסף כרגע.');
   if (result[0] === -1) throw failure(409, 'הרשימה מלאה. אפשר להוסיף מוצר אחרי הסרת פריטים שנקנו.');
   try {
     const saved = JSON.parse(result[1]); validateItem(saved);
     if (typeof saved.id !== 'string' || typeof saved.createdAt !== 'number') throw new Error('Invalid item');
-    return { item: saved, created: result[0] === 1 };
+    return { item: saved, created: result[0] === 1, catalogProduct: result[2] ? JSON.parse(result[2]) : null };
   } catch { throw failure(502, 'לא ניתן לאשר שהמוצר נשמר. רעננו את הרשימה.'); }
 }
 async function removeItem(input) {
@@ -74,4 +91,25 @@ async function removeItem(input) {
   if (result !== 0 && result !== 1) throw failure(502, 'לא ניתן לאשר שהמוצר הוסר. רעננו את הרשימה.');
   return { removed: result === 1 };
 }
-module.exports = { readList, addItem, removeItem };
+async function readCatalog() {
+  const result = await command(['HGETALL', CATALOG_KEY]);
+  if (!Array.isArray(result) || result.length % 2) throw failure(502, 'לא ניתן לטעון את אפשרויות הבחירה כרגע.');
+  try {
+    const catalog = [];
+    for (let index = 1; index < result.length; index += 2) {
+      const product = JSON.parse(result[index]); validateItem(product);
+      if (typeof product.hidden !== 'boolean') throw new Error('Invalid product');
+      catalog.push({ name: product.name, category: product.category, hidden: product.hidden });
+    }
+    return catalog;
+  } catch { throw failure(502, 'לא ניתן לטעון את אפשרויות הבחירה כרגע.'); }
+}
+async function saveProduct(input, hidden) {
+  const value = validateItem(input);
+  const product = { ...value, hidden };
+  const result = await command(['EVAL', SAVE_PRODUCT, '1', CATALOG_KEY, fieldFor(value.name), JSON.stringify(product)]);
+  if (result === 0) throw failure(409, 'קטלוג המוצרים מלא. לא ניתן לעדכן אותו כרגע.');
+  if (result !== 1) throw failure(502, 'לא ניתן לעדכן את אפשרויות הבחירה כרגע.');
+  return { catalogProduct: product };
+}
+module.exports = { readList, addItem, removeItem, readCatalog, saveProduct };
