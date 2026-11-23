@@ -1,5 +1,5 @@
 'use strict';
-const { readList, addItem, removeItem, readCatalog, saveProduct } = require('../server/shared-list.cjs');
+const { readList, addItem, removeItem, readCatalog, saveProduct, readFrequentProducts } = require('../server/shared-list.cjs');
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -11,8 +11,10 @@ module.exports = async function handler(req, res) {
       return res.status(405).json({ error: 'פעולה לא נתמכת.' });
     }
     if (req.method === 'GET') {
-      const [items, catalog] = await Promise.all([readList(), readCatalog()]);
-      return res.status(200).json({ items, catalog });
+      const [items, catalog, frequent] = await Promise.all([
+        readList(), readCatalog(), readFrequentProducts().catch(() => null)
+      ]);
+      return res.status(200).json({ items, catalog, frequent });
     }
     // JSON-only mutations and no CORS prevent writes from unrelated browser origins.
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return res.status(415).json({ error: 'סוג הבקשה אינו נתמך.' });
