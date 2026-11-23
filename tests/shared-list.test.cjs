@@ -38,6 +38,46 @@ test('shared list persistence, concurrent operations, validation and failure han
     const removed = await Promise.all([removeItem(item), removeItem(item)]);
     assert.equal(removed.filter(result => result.removed).length, 1);
   });
+  await t.test('frequent products count distinct purchase weeks and exclude deletions and undone purchases', async t => {
+    const now = Date.now();
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    const milk = { name: 'חלב לבדיקה', category: 'dairy' };
+    const bread = { name: 'לחם לבדיקה', category: 'bakery' };
+    const clock = t.mock.method(Date, 'now', () => now - 2 * weekMs);
+    const purchase = async product => {
+      const { item } = (await call('POST', product)).body;
+      const removed = await call('DELETE', { ...item, purchased: true });
+      assert.equal(removed.code, 200);
+      assert.equal(removed.body.removed, true);
+      return { ...item, undoPurchaseWeek: removed.body.purchaseWeek };
+    };
+    const getFrequent = async () => (await call('GET')).body.frequent;
+    const historyKeys = new Set();
+    try {
+      const first = await purchase(milk);
+      historyKeys.add(`shopping-list:purchases:v1:${first.undoPurchaseWeek}`);
+      await purchase(milk);
+      await purchase(bread);
+      assert.deepEqual(await getFrequent(), []);
+
+      clock.mock.mockImplementation(() => now - weekMs);
+      const second = await purchase(milk);
+      historyKeys.add(`shopping-list:purchases:v1:${second.undoPurchaseWeek}`);
+      const { item } = (await call('POST', bread)).body;
+      assert.equal((await call('DELETE', item)).body.removed, true);
+      assert.deepEqual(await getFrequent(), [milk]);
+      assert.equal((await call('POST', second)).code, 200);
+      assert.deepEqual(await getFrequent(), []);
+
+      await purchase(milk);
+      clock.mock.mockImplementation(() => now + 7 * weekMs);
+      assert.deepEqual(await getFrequent(), []);
+      assert.equal((await call('POST', { ...second, undoPurchaseWeek: 'invalid' })).code, 400);
+    } finally {
+      clock.mock.restore();
+      if (historyKeys.size) adapter.command(['DEL', ...historyKeys]);
+    }
+  });
   await t.test('free-text products stay in the catalog after purchase and reload', async () => {
     const result = await addItem({ name: 'גבינת הבית', category: 'dairy', remember: true });
     assert.deepEqual(result.catalogProduct, { name: 'גבינת הבית', category: 'dairy', hidden: false });

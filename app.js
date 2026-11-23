@@ -23,6 +23,7 @@ let writing = false;
 let reading = false;
 let epoch = 0;
 let catalogOverrides = [];
+let frequentProducts = [];
 let catalogDirty = false;
 let editingCatalog = false;
 let quickCandidates = [];
@@ -107,6 +108,14 @@ function updateConnection() {
   document.querySelector('#sync-label').textContent = !navigator.onLine ? 'אין חיבור — מוצג העדכון האחרון' : writing ? 'שומרים ברשימה המשותפת…' : sharedReady ? 'רשימה אחת לכולם · מתעדכנת אוטומטית' : 'אין חיבור לרשימה המשותפת';
   document.querySelector('#sync-state').classList.toggle('disconnected', !sharedReady || !navigator.onLine);
   document.querySelectorAll('.product-button, .item input, .delete-button, #custom-form button, #custom-search-add, #undo-button, .suggestion, .restore-product').forEach(control => { control.disabled = !editable; });
+  document.querySelectorAll('.frequent-product').forEach(button => {
+    const chosen = inList(button.dataset.name);
+    button.disabled = !editable;
+    button.classList.toggle('chosen', chosen);
+    button.setAttribute('aria-disabled', String(chosen || !editable));
+    button.setAttribute('aria-label', `${button.dataset.name} — ${chosen ? 'כבר ברשימה' : 'הוספה לרשימה'}`);
+    button.querySelector('.product-state').textContent = chosen ? '✓' : '+';
+  });
   document.querySelector('#import-local').disabled = !editable;
   document.querySelector('#import-panel').hidden = legacyItems.length === 0;
   document.querySelector('#import-count').textContent = legacyItems.length;
@@ -129,6 +138,7 @@ function refreshDisplay() {
   renderItems();
   if (catalogDirty) {
     renderCategories();
+    renderFrequentProducts();
     if (activeCategory) renderCategoryProducts();
     catalogDirty = false;
   }
@@ -145,6 +155,10 @@ async function refreshShared() {
     if (startEpoch !== epoch) return;
     const changed = JSON.stringify(nextItems) !== JSON.stringify(items) || JSON.stringify(nextCatalog) !== JSON.stringify(catalogOverrides);
     applyCatalog(nextCatalog);
+    if (Array.isArray(data.frequent) && JSON.stringify(data.frequent) !== JSON.stringify(frequentProducts)) {
+      frequentProducts = data.frequent;
+      renderFrequentProducts();
+    }
     items = nextItems; hasSnapshot = true; sharedReady = true; warning.hidden = true; cacheSnapshot();
     if (changed) {
       const focusedRow = document.activeElement?.closest('.item');
@@ -196,6 +210,36 @@ async function addItem(value, categoryId, remember = false) {
     }
     toast(input.remember ? `${item.name} נוסף לרשימה ונשמר לבחירה קבועה` : data.created ? `${item.name} נוסף לרשימה של כולם` : `${item.name} כבר ברשימה המשותפת`);
   });
+}
+function renderFrequentProducts() {
+  const hidden = new Set(catalogOverrides.filter(product => product.hidden).map(product => normalize(product.name)));
+  const choices = new Map();
+  for (const product of [...frequentProducts, ...products]) {
+    const key = normalize(product.name);
+    if (hidden.has(key) || choices.has(key)) continue;
+    choices.set(key, productByName.get(key) || product);
+    if (choices.size === 12) break;
+  }
+  const grid = document.querySelector('#frequent-products');
+  const focusedName = grid.contains(document.activeElement) ? document.activeElement.dataset.name : null;
+  grid.replaceChildren();
+  for (const product of choices.values()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'frequent-product';
+    button.dataset.name = product.name;
+    const name = document.createElement('span');
+    name.textContent = product.name;
+    const state = document.createElement('span');
+    state.className = 'product-state';
+    state.setAttribute('aria-hidden', 'true');
+    button.append(name, state);
+    button.addEventListener('click', () => {
+      if (!inList(product.name)) void addItem(product.name, product.category);
+    });
+    grid.append(button);
+    if (product.name === focusedName) button.focus({ preventScroll: true });
+  }
 }
 function renderCategories() {
   const grid = document.querySelector('#category-grid'); grid.replaceChildren();
@@ -372,9 +416,9 @@ async function removeItem(id, purchased) {
   if (!item) return;
   const position = [...document.querySelectorAll('.item')].findIndex(row => row.dataset.id === id);
   const success = await mutate(async () => {
-    const result = await request('DELETE', item);
+    const result = await request('DELETE', { ...item, purchased });
     items = items.filter(existing => existing.id !== id);
-    removedItem = result.removed ? { item } : null;
+    removedItem = result.removed ? { item, purchaseWeek: result.purchaseWeek } : null;
     toast(result.removed ? (purchased ? `${item.name} נקנה והוסר מהרשימה של כולם` : `${item.name} הוסר מהרשימה של כולם`) : `${item.name} כבר הוסר על ידי משתתף אחר`, result.removed);
   });
   if (success && !document.querySelector('#list-view').hidden) {
@@ -414,9 +458,9 @@ function renderItems() {
 }
 document.querySelector('#undo-button').addEventListener('click', async () => {
   if (!removedItem) return;
-  const { item } = removedItem;
+  const { item, purchaseWeek } = removedItem;
   const success = await mutate(async () => {
-    const data = await request('POST', item);
+    const data = await request('POST', { ...item, undoPurchaseWeek: purchaseWeek });
     const [restored] = parseItems([data.item]);
     items = items.filter(existing => normalize(existing.name) !== normalize(restored.name));
     items.push(restored); removedItem = null;
@@ -558,7 +602,7 @@ if (SpeechRecognition) {
   document.querySelector('#voice-status').textContent = 'להכתבה קולית אפשר להשתמש במיקרופון שבמקלדת הטלפון.';
 }
 
-renderCategories(); renderItems(); route(false); updateConnection();
+renderCategories(); renderFrequentProducts(); renderItems(); route(false); updateConnection();
 void refreshShared();
 let installPrompt;
 window.addEventListener('beforeinstallprompt', event => {
